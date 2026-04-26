@@ -1,8 +1,56 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
+
 const app = express();
+
+// Configuration
+const APK_REMOTE_URL = process.env.APK_URL || 'https://files.catbox.moe/o4875t.apk';
+const LOCAL_APK_PATH = path.join(__dirname, 'cached_app.apk');
+const APP_NAME = process.env.APP_NAME || 'Cinverse';
+
+// Function to download and cache the APK locally
+async function downloadAndCacheAPK() {
+  console.log('📥 Downloading APK from remote URL...');
+  
+  try {
+    const response = await axios({
+      method: 'get',
+      url: APK_REMOTE_URL,
+      responseType: 'stream'
+    });
+
+    const writer = fs.createWriteStream(LOCAL_APK_PATH);
+    response.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+      writer.on('finish', () => {
+        console.log('✅ APK downloaded and cached successfully!');
+        console.log(`📁 Saved to: ${LOCAL_APK_PATH}`);
+        resolve();
+      });
+      writer.on('error', reject);
+    });
+  } catch (error) {
+    console.error('❌ Failed to download APK:', error.message);
+    throw error;
+  }
+}
+
+// Check if local APK exists, if not download it
+async function ensureLocalAPK() {
+  try {
+    await fs.promises.access(LOCAL_APK_PATH);
+    console.log('📱 Local APK already exists, using cached version');
+    return true;
+  } catch (error) {
+    console.log('⚠️ Local APK not found, downloading...');
+    await downloadAndCacheAPK();
+    return true;
+  }
+}
 
 // Serve static files if needed
 app.use(express.static('public'));
@@ -15,7 +63,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Download ${process.env.APP_NAME || 'Cinverse'}</title>
+    <title>Download ${APP_NAME}</title>
     <style>
         * {
             margin: 0;
@@ -151,7 +199,7 @@ app.get('/', (req, res) => {
                 <div class="checkmark-check"></div>
             </div>
         </div>
-        <div class="message" id="message">Preparing ${process.env.APP_NAME || 'Cinverse'}...</div>
+        <div class="message" id="message">Preparing ${APP_NAME}...</div>
         <div class="sub-message" id="subMessage"></div>
         <div class="manual-link">
             ⚡ Having issues? <a href="/download" id="manualLink">Click here to download manually</a>
@@ -159,12 +207,12 @@ app.get('/', (req, res) => {
     </div>
 
     <script>
-        const APP_NAME = '${process.env.APP_NAME || 'Cinverse'}';
+        const APP_NAME = '${APP_NAME}';
         const DOWNLOAD_DELAY = ${process.env.DOWNLOAD_DELAY || 1500};
         
         window.onload = function() {
             setTimeout(() => {
-                // Start download from our proxy endpoint (this gives correct filename)
+                // Start download from our server (serves local cached file)
                 window.location.href = '/download';
                 
                 // Show check mark
@@ -182,28 +230,71 @@ app.get('/', (req, res) => {
   res.send(html);
 });
 
-// Download endpoint that serves the file with correct filename
+// Download endpoint that serves the LOCAL cached file
 app.get('/download', async (req, res) => {
   try {
-    const response = await axios({
-      method: 'get',
-      url: process.env.APK_URL || 'https://files.catbox.moe/o4875t.apk',
-      responseType: 'stream'
+    // Check if local file exists
+    if (!fs.existsSync(LOCAL_APK_PATH)) {
+      console.error('❌ Local APK not found!');
+      return res.status(404).json({ error: 'App file not found on server. Please contact support.' });
+    }
+
+    // Get file stats
+    const stat = fs.statSync(LOCAL_APK_PATH);
+    
+    // Set headers for APK download
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', `attachment; filename="${APP_NAME}.apk"`);
+    res.setHeader('Content-Length', stat.size);
+    
+    // Create read stream from local file and pipe to response
+    const fileStream = fs.createReadStream(LOCAL_APK_PATH);
+    fileStream.pipe(res);
+    
+    console.log(`📱 Serving cached APK to ${req.ip} - ${APP_NAME}.apk (${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
+    
+    fileStream.on('error', (error) => {
+      console.error('Stream error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to send file' });
+      }
     });
     
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Disposition', 'attachment; filename="Cinverse.apk"');
-    res.setHeader('Content-Length', response.headers['content-length']);
-    
-    response.data.pipe(res);
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ error: 'Download failed. Please try again.' });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📱 Download URL: http://localhost:${PORT}`);
+// Optional: Endpoint to manually refresh the cached APK
+app.post('/refresh-cache', async (req, res) => {
+  try {
+    console.log('🔄 Manually refreshing APK cache...');
+    await downloadAndCacheAPK();
+    res.json({ success: true, message: 'APK cache refreshed successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
+
+// Start server after ensuring APK is cached
+const PORT = process.env.PORT || 3000;
+
+async function startServer() {
+  try {
+    // Ensure local APK exists before starting server
+    await ensureLocalAPK();
+    
+    app.listen(PORT, () => {
+      console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+      console.log(`📱 Download URL: http://localhost:${PORT}`);
+      console.log(`💾 Cached APK location: ${LOCAL_APK_PATH}`);
+      console.log(`🔄 To refresh cache: POST /refresh-cache\n`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
