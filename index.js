@@ -1,128 +1,13 @@
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
-const fs = require('fs');
 require('dotenv').config();
-
 const app = express();
-
-// Configuration
-const APK_REMOTE_URL = process.env.APK_URL || 'https://files.catbox.moe/o4875t.apk';
-const LOCAL_APK_PATH = path.join(__dirname, 'cached_app.apk');
-const APP_NAME = process.env.APP_NAME || 'Cinverse';
-const SERVER_URL = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3000}`;
-
-// Function to download and cache the APK locally
-async function downloadAndCacheAPK() {
-  console.log('📥 Downloading APK from remote URL...');
-  
-  try {
-    const response = await axios({
-      method: 'get',
-      url: APK_REMOTE_URL,
-      responseType: 'stream'
-    });
-
-    const writer = fs.createWriteStream(LOCAL_APK_PATH);
-    response.data.pipe(writer);
-
-    return new Promise((resolve, reject) => {
-      writer.on('finish', () => {
-        console.log('✅ APK downloaded and cached successfully!');
-        console.log(`📁 Saved to: ${LOCAL_APK_PATH}`);
-        resolve();
-      });
-      writer.on('error', reject);
-    });
-  } catch (error) {
-    console.error('❌ Failed to download APK:', error.message);
-    throw error;
-  }
-}
-
-// Check if local APK exists, if not download it
-async function ensureLocalAPK() {
-  try {
-    await fs.promises.access(LOCAL_APK_PATH);
-    console.log('📱 Local APK already exists, using cached version');
-    return true;
-  } catch (error) {
-    console.log('⚠️ Local APK not found, downloading...');
-    await downloadAndCacheAPK();
-    return true;
-  }
-}
 
 // Serve static files if needed
 app.use(express.static('public'));
-app.use(express.json());
 
-// ============ NEW: Direct API Download Link Endpoint ============
-app.get('/api/download-link', (req, res) => {
-  try {
-    // Get file size
-    const stats = fs.statSync(LOCAL_APK_PATH);
-    const fileSizeInMB = (stats.size / (1024 * 1024)).toFixed(2);
-    
-    // Generate direct download URL
-    const directDownloadUrl = `${SERVER_URL}/download`;
-    
-    // Return JSON with download info
-    res.json({
-      success: true,
-      app_name: APP_NAME,
-      download_url: directDownloadUrl,
-      file_name: `${APP_NAME}.apk`,
-      file_size: `${fileSizeInMB} MB`,
-      file_size_bytes: stats.size,
-      server: SERVER_URL,
-      expires: null, // Never expires (local file)
-      message: "This URL can be used on any website for direct download"
-    });
-    
-    console.log(`📡 API download link requested by ${req.ip}`);
-    
-  } catch (error) {
-    res.status(404).json({
-      success: false,
-      error: "APK file not found on server",
-      message: "Please contact support"
-    });
-  }
-});
-
-// ============ NEW: Get multiple link formats (for different uses) ============
-app.get('/api/links', (req, res) => {
-  try {
-    const stats = fs.statSync(LOCAL_APK_PATH);
-    const fileSizeInMB = (stats.size / (1024 * 1024)).toFixed(2);
-    
-    res.json({
-      success: true,
-      app_name: APP_NAME,
-      links: {
-        direct_download: `${SERVER_URL}/download`,
-        html_page: SERVER_URL,
-        embed_code: `<a href="${SERVER_URL}/download" download="${APP_NAME}.apk">Download ${APP_NAME}</a>`,
-        markdown: `[Download ${APP_NAME}](${SERVER_URL}/download)`,
-        html_button: `<button onclick="window.location.href='${SERVER_URL}/download'" style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">Download ${APP_NAME}</button>`
-      },
-      file_info: {
-        name: `${APP_NAME}.apk`,
-        size: `${fileSizeInMB} MB`,
-        size_bytes: stats.size
-      }
-    });
-    
-  } catch (error) {
-    res.status(404).json({
-      success: false,
-      error: "APK file not found"
-    });
-  }
-});
-
-// ============ Main route with animated download page ============
+// Main route with animated download page
 app.get('/', (req, res) => {
   const html = `
 <!DOCTYPE html>
@@ -130,7 +15,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Download ${APP_NAME}</title>
+    <title>Download ${process.env.APP_NAME || 'Cinverse'}</title>
     <style>
         * {
             margin: 0;
@@ -266,7 +151,7 @@ app.get('/', (req, res) => {
                 <div class="checkmark-check"></div>
             </div>
         </div>
-        <div class="message" id="message">Preparing ${APP_NAME}...</div>
+        <div class="message" id="message">Preparing ${process.env.APP_NAME || 'Cinverse'}...</div>
         <div class="sub-message" id="subMessage"></div>
         <div class="manual-link">
             ⚡ Having issues? <a href="/download" id="manualLink">Click here to download manually</a>
@@ -274,12 +159,12 @@ app.get('/', (req, res) => {
     </div>
 
     <script>
-        const APP_NAME = '${APP_NAME}';
+        const APP_NAME = '${process.env.APP_NAME || 'Cinverse'}';
         const DOWNLOAD_DELAY = ${process.env.DOWNLOAD_DELAY || 1500};
         
         window.onload = function() {
             setTimeout(() => {
-                // Start download from our server (serves local cached file)
+                // Start download from our proxy endpoint (this gives correct filename)
                 window.location.href = '/download';
                 
                 // Show check mark
@@ -297,77 +182,28 @@ app.get('/', (req, res) => {
   res.send(html);
 });
 
-// Download endpoint that serves the LOCAL cached file
+// Download endpoint that serves the file with correct filename
 app.get('/download', async (req, res) => {
   try {
-    // Check if local file exists
-    if (!fs.existsSync(LOCAL_APK_PATH)) {
-      console.error('❌ Local APK not found!');
-      return res.status(404).json({ error: 'App file not found on server. Please contact support.' });
-    }
-
-    // Get file stats
-    const stat = fs.statSync(LOCAL_APK_PATH);
-    
-    // Set headers for APK download
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Disposition', `attachment; filename="${APP_NAME}.apk"`);
-    res.setHeader('Content-Length', stat.size);
-    
-    // Create read stream from local file and pipe to response
-    const fileStream = fs.createReadStream(LOCAL_APK_PATH);
-    fileStream.pipe(res);
-    
-    console.log(`📱 Serving cached APK to ${req.ip} - ${APP_NAME}.apk (${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
-    
-    fileStream.on('error', (error) => {
-      console.error('Stream error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to send file' });
-      }
+    const response = await axios({
+      method: 'get',
+      url: process.env.APK_URL || 'https://files.catbox.moe/o4875t.apk',
+      responseType: 'stream'
     });
     
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="Cinverse.apk"');
+    res.setHeader('Content-Length', response.headers['content-length']);
+    
+    response.data.pipe(res);
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ error: 'Download failed. Please try again.' });
   }
 });
 
-// Optional: Endpoint to manually refresh the cached APK
-app.post('/refresh-cache', async (req, res) => {
-  try {
-    console.log('🔄 Manually refreshing APK cache...');
-    await downloadAndCacheAPK();
-    res.json({ success: true, message: 'APK cache refreshed successfully!' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Start server after ensuring APK is cached
 const PORT = process.env.PORT || 3000;
-
-async function startServer() {
-  try {
-    // Ensure local APK exists before starting server
-    await ensureLocalAPK();
-    
-    app.listen(PORT, () => {
-      console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-      console.log(`📱 Download URL: http://localhost:${PORT}`);
-      console.log(`💾 Cached APK location: ${LOCAL_APK_PATH}`);
-      console.log(`\n📡 API Endpoints:`);
-      console.log(`   → Get download link: http://localhost:${PORT}/api/download-link`);
-      console.log(`   → Get all links/formats: http://localhost:${PORT}/api/links`);
-      console.log(`   → Direct download: http://localhost:${PORT}/download`);
-      console.log(`   → Refresh cache: POST /refresh-cache`);
-      console.log(`\n💡 Usage on other websites:`);
-      console.log(`   Fetch ${SERVER_URL}/api/download-link to get the direct URL\n`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-}
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📱 Download URL: http://localhost:${PORT}`);
+});
